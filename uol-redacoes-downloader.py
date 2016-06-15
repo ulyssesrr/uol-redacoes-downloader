@@ -20,12 +20,15 @@ def slugify(value):
 
 import scrapy
 from scrapy.settings import Settings
-class BlogSpider(scrapy.Spider):
+class UOLSpider(scrapy.Spider):
 	name = 'uol-redacoes-downloader'
-	start_urls = ['http://educacao.uol.com.br/bancoderedacoes/propostas/carta-convite-discutir-discriminacao-na-escola.htm']
 	custom_settings = {'USER_AGENT':'Mozilla/5.0 (Windows; U; Windows NT 5.1; pt-BR; rv:1.9) Gecko/20080705 Firefox/3.0 Kapiko/3.0', 
 					'LOG_LEVEL': 'INFO'}
 		
+	def __init__(self):
+		with open('urls.txt', 'r') as f:
+			self.start_urls = [url.strip() for url in f.readlines()]
+	
 	def parse(self, response):
 		tema = response.css('h1.pg-color10::text').extract()[0].strip()
 		print('TEMA', tema)
