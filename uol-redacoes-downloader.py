@@ -73,11 +73,13 @@ class UOLSpider(scrapy.Spider):
 			redacao['paragrafos'] = [rmMultiSpace.sub(' ', para) for para in redacao['paragrafos']]
 			#print("3",redacao['paragrafos'])
 			texto = "\r\n\r\n".join(redacao['paragrafos'])
+			if not "sem" in redacao['titulo'].lower() or not ("titulo" in redacao['titulo'].lower() or "título" in redacao['titulo'].lower()):
+				texto = redacao['titulo'] + "\r\n\r\n" + texto
 			f.write(texto)
 		
 		with open(os.path.join(response.meta['basePath'], 'notas.csv'), 'a') as f:
 			writer = csv.writer(f)
-			writer.writerow([fileName, redacao['notaTotal']] + redacao['notas'])
+			writer.writerow([fileName, redacao['notaTotal']] + redacao['notas'] + [response.url])
 	
 	def parse_redacao_new_layout(self, response):
 		redacao = {}
@@ -102,7 +104,7 @@ class UOLSpider(scrapy.Spider):
 		start_idx = redacao['paragrafos'].index('</h1>') + len('</h1>')
 		end_idx = redacao['paragrafos'].index('<h3')
 		redacao['paragrafos'] = redacao['paragrafos'][start_idx:end_idx]
-		redacao['paragrafos'] = redacao['paragrafos'].split('<br><br>')
+		redacao['paragrafos'] = re.split("\<br\>[\s]*\<br\>", redacao['paragrafos'])#.split('<br><br>')
 		
 		
 		print("TITULO", redacao['titulo'])
