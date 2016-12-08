@@ -2,6 +2,7 @@
 # vim: set fileencoding=utf-8 :
 
 import csv
+import json
 import logging
 import os
 import re
@@ -10,6 +11,8 @@ from bs4 import BeautifulSoup
 
 
 import scrapy
+from scrapy.xlib.pydispatch import dispatcher
+from scrapy import signals
 from scrapy.settings import Settings
 
 def slugify(value):
@@ -35,6 +38,18 @@ class UOLSpider(scrapy.Spider):
 	def __init__(self):
 		with open('urls.txt', 'r') as f:
 			self.start_urls = [url.strip() for url in f.readlines()]
+		self.topics_info = []
+		try:
+			with open('custom.json', 'r') as f:
+				self.custom = json.load(f)
+		except FileNotFoundError:
+			self.custom = {}
+		dispatcher.connect(self.on_spider_closed, signals.spider_closed)
+		
+	def on_spider_closed(self, spider):
+		for topic_info in spider.topics_info:
+			with open(os.path.join(topic_info['pasta'], 'topic-info.json'), 'w') as f:
+				json.dump(topic_info, f, sort_keys=True, indent=4)
 	
 	def parse(self, response):
 		lower_url = response.url.lower()
@@ -59,28 +74,39 @@ class UOLSpider(scrapy.Spider):
 		basePath = slugify(tema)
 		os.makedirs(basePath, exist_ok=True)
 		
+		topic_info = {'tema': tema, 'pasta': basePath, 'redacoes': []}
+		
+		self.topics_info += [topic_info]
+		
 		self.logger.info("TEMA: %s - Redações: %d - Pasta Destino: %s" % (tema, len(url_redacoes), basePath))
 		for i, url in enumerate(url_redacoes):
 			self.logger.debug("URL: %s" % (url.extract()))
-			#if "xemplos" in url.extract():
-			yield scrapy.Request(url.extract(), meta={'basePath': basePath, 'idx': i, 'layout_type': layout_type}, callback=self.parse_redacao)
+			yield scrapy.Request(url.extract(), meta={'basePath': basePath, 'idx': i, 'layout_type': layout_type, 'topic_info': topic_info}, callback=self.parse_redacao)
 			
 	def get_deep_html_text(self, elem):
 		return ''.join(BeautifulSoup(elem, "lxml").findAll(text=True)).strip()
 	
 	def parse_redacao(self, response):
-		layout_type = response.meta['layout_type']
-		if layout_type == LAYOUT_UOL_0:
-			redacao = self.parse_redacao_old_layout(response)
-			rmCerto = re.compile(r'<span class=\"texto-corrigido\">.*?</span>')
-		elif layout_type == LAYOUT_UOL_1:
-			redacao = self.parse_redacao_new_layout(response)
-			rmCerto = re.compile(r'<span class=\"certo\">.*?</span>')
-		elif layout_type == LAYOUT_BRASILESCOLA:
-			redacao = self.parse_redacao_brasilescola(response)
-			rmCerto = None
+		topic_info = response.meta['topic_info']
+		
+		url = response.url.lower()
+		if url not in self.custom:
+			layout_type = response.meta['layout_type']
+			if layout_type == LAYOUT_UOL_0:
+				redacao = self.parse_redacao_old_layout(response)
+				rmCerto = re.compile(r'<span class=\"texto-corrigido\">.*?</span>')
+			elif layout_type == LAYOUT_UOL_1:
+				redacao = self.parse_redacao_new_layout(response)
+				rmCerto = re.compile(r'<span class=\"certo\">.*?</span>')
+			elif layout_type == LAYOUT_BRASILESCOLA:
+				redacao = self.parse_redacao_brasilescola(response)
+				rmCerto = None
+			else:
+				raise Exception("Unknow layout type: %s" % (layout_type))
 		else:
-			raise Exception("Unknow layout type: %s" % (layout_type))
+			redacao = self.custom[url]
+			redacao['idx'] = response.meta['idx']
+			rmCerto = None
 			
 		rmMultiSpace = re.compile(r'\s+')
 	
@@ -106,7 +132,12 @@ class UOLSpider(scrapy.Spider):
 		
 		with open(os.path.join(response.meta['basePath'], 'notas.csv'), 'a') as f:
 			writer = csv.writer(f)
-			writer.writerow([fileName, redacao['notaTotal']] + redacao['notas'] + [response.url])
+			writer.writerow([fileName, redacao['nota_total']] + redacao['notas'] + [response.url])
+			
+			
+		redacao['txt_file'] = fileName
+		redacao['url'] = response.url
+		topic_info['redacoes'] += [redacao]
 			
 	def parse_redacao_brasilescola(self, response):
 		redacao = {}
@@ -119,7 +150,9 @@ class UOLSpider(scrapy.Spider):
 		
 		redacao['titulo'] = titulo
 		redacao['idx'] = response.meta['idx']
-		redacao['paragrafos'] = response.css('div.conteudo-materia > p').extract()
+		redacao['paragrafos'] = response.css('div.conteudo-materia > h2').extract()
+		if len(redacao['paragrafos']) == 0:
+			redacao['paragrafos'] = response.css('div.conteudo-materia > p').extract()
 		
 		self.logger.debug("TITULO: [%s]" % (redacao['titulo']))
 		
@@ -127,11 +160,11 @@ class UOLSpider(scrapy.Spider):
 		redacao['notas'] = [float(nota)/100 for nota in tableNotas.css("td::text").extract()[4:17:3]]
 		#for i, elem in enumerate(tableNotas.css("td").extract()):
 		#	print(i, self.get_deep_html_text(elem))
-		notaTotalTxt = self.get_deep_html_text(tableNotas.css("td").extract()[18])
-		notaTotal = [int(s) for s in notaTotalTxt.split() if s.isdigit()][0]
-		redacao['notaTotal'] = float(notaTotal)/100
-		#print(redacao['notas'], redacao['notaTotal'])
-		assert sum(redacao['notas']) == redacao['notaTotal']
+		nota_totalTxt = self.get_deep_html_text(tableNotas.css("td").extract()[18])
+		nota_total = [int(s) for s in nota_totalTxt.split() if s.isdigit()][0]
+		redacao['nota_total'] = float(nota_total)/100
+		#print(redacao['notas'], redacao['nota_total'])
+		assert sum(redacao['notas']) == redacao['nota_total']
 		return redacao
 	
 	def parse_redacao_new_layout(self, response):
@@ -144,9 +177,9 @@ class UOLSpider(scrapy.Spider):
 		
 		tableNotas = response.css('table.table-redacoes')[0]
 		redacao['notas'] = [float(nota.replace(',', '.')) for nota in tableNotas.css("td::text").extract()[1::2]]
-		redacao['notaTotal'] = float(tableNotas.css("th::text").extract()[3].replace(',', '.'))
-		#print(redacao['notas'], redacao['notaTotal'])
-		assert sum(redacao['notas']) == redacao['notaTotal']
+		redacao['nota_total'] = float(tableNotas.css("th::text").extract()[3].replace(',', '.'))
+		#print(redacao['notas'], redacao['nota_total'])
+		assert sum(redacao['notas']) == redacao['nota_total']
 		return redacao
 
 	def parse_redacao_old_layout(self, response):
@@ -165,9 +198,9 @@ class UOLSpider(scrapy.Spider):
 		if len(tableComp) == 1:
 			tableNotas = tableComp[0]
 			redacao['notas'] = [float(nota.replace(',', '.')) for nota in tableNotas.css("td::text").extract()[2::3]]
-			redacao['notaTotal'] = float(response.css("table.total td.destaque::text").extract()[0].replace(',', '.'))
-			#print(redacao['notas'], redacao['notaTotal'])
-			assert sum(redacao['notas']) == redacao['notaTotal']
+			redacao['nota_total'] = float(response.css("table.total td.destaque::text").extract()[0].replace(',', '.'))
+			#print(redacao['notas'], redacao['nota_total'])
+			assert sum(redacao['notas']) == redacao['nota_total']
 			return redacao
 		else:
 			self.logger.error("Redação sem tabela de notas, ignorando... (%s)" % (response.url))
